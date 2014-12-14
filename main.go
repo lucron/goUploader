@@ -1,17 +1,17 @@
 package main
 
 import (
+	"crypto/rand"
 	"errors"
-	"fmt"
-	"hash/crc32"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
+
+var StdChars = []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
 
 func main() {
 	log.Println("Start Uploader.")
@@ -41,6 +41,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	err = CheckMIME(file)
 	if err != nil {
 		log.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	//hackish workaround, CheckMIME already reads some byte,
@@ -50,8 +51,13 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	//TODO: dont parse fileextension without verifying
 	filename, err := SaveFile(file, filepath.Ext(header.Filename))
-
-	fmt.Fprintf(w, "<a href='/img/"+filename+"'>"+filename+"</a>")
+	if err != nil {
+		log.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/img/"+filename, http.StatusFound)
+	//fmt.Fprintf(w, "<a href='/img/"+filename+"'>"+filename+"</a>")
 }
 
 func CheckMIME(file io.Reader) error {
@@ -66,26 +72,40 @@ func CheckMIME(file io.Reader) error {
 	return nil
 }
 
-func SaveFile(src io.Reader, extension string) (string, error) {
-
-	h := crc32.NewIEEE()
-	dest, err := os.Create("tmpfile")
-	if err != nil {
-		log.Println(err.Error())
-		return "", err
-	}
+func SaveFile(src io.Reader, ext string) (string, error) {
+	fn := newLenChars(10, StdChars)
+	dest, err := os.Create("html/img/" + fn + ext)
 	defer dest.Close()
-	t := io.TeeReader(src, h)
-	_, err = io.Copy(dest, t)
 	if err != nil {
-		log.Println(err.Error())
 		return "", err
 	}
-	filename := strconv.Itoa(int(h.Sum32())) + extension
-	err = os.Link("tmpfile", "html/img/"+filename)
+	_, err = io.Copy(dest, src)
 	if err != nil {
-		log.Println(err.Error())
-		return "", err
+		return "", nil
 	}
-	return filename, nil
+	return fn + ext, nil
+}
+
+func newLenChars(length int, chars []byte) string {
+	b := make([]byte, length)
+	r := make([]byte, length+(length/4)) // storage for random bytes.
+	clen := byte(len(chars))
+	maxrb := byte(256 - (256 % len(chars)))
+	i := 0
+	for {
+		if _, err := io.ReadFull(rand.Reader, r); err != nil {
+			panic("error reading from random source: " + err.Error())
+		}
+		for _, c := range r {
+			if c >= maxrb {
+				continue
+			}
+			b[i] = chars[c%clen]
+			i++
+			if i == length {
+				return string(b)
+			}
+		}
+	}
+	panic("unreachable")
 }
